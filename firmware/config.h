@@ -1,0 +1,76 @@
+/* =====================================================================
+ *  config.h  —  Synaptix Robotics
+ *  ML-Based Predictive Maintenance of Electrical Motors
+ *  Edit everything project-specific here. Nothing else needs changing.
+ * ===================================================================== */
+#ifndef CONFIG_H
+#define CONFIG_H
+
+/* ---------------- Wi-Fi ---------------- */
+#define WIFI_SSID           "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD       "YOUR_WIFI_PASSWORD"
+#define MDNS_HOST           "synaptix-pdm"      // http://synaptix-pdm.local
+#define AP_FALLBACK_SSID    "Synaptix-PDM"      // if Wi-Fi fails -> AP mode
+#define AP_FALLBACK_PASS    "synaptix123"
+
+/* ---------------- Analog front-end -----------------------------------
+ * The ESP8266 has only ONE ADC pin (A0), but this project needs TWO
+ * analog channels (voltage sensor + current sensor).
+ *
+ *   USE_ADS1115 = 1  -> ADS1115 16-bit I2C ADC (RECOMMENDED, shares the
+ *                       same I2C bus as the LCD). Voltage on A0 of ADS,
+ *                       current on A1 of ADS. Both channels real.
+ *   USE_ADS1115 = 0  -> Fallback: voltage sensor on the ESP's own A0.
+ *                       Current is then reported as "unavailable" and the
+ *                       model runs with a current-imputed value.
+ * -------------------------------------------------------------------- */
+#define USE_ADS1115         1
+
+/* ---------------- GPIO map (NodeMCU / Wemos D1 mini) ---------------- */
+#define PIN_I2C_SDA         4    // D2  -> LCD SDA + ADS1115 SDA
+#define PIN_I2C_SCL         5    // D1  -> LCD SCL + ADS1115 SCL
+#define PIN_DHT             2    // D4  -> DHT11 DATA
+#define PIN_RELAY          14    // D5  -> relay module IN
+#define PIN_VIBRATION      12    // D6  -> SW-420 DO (digital, interrupt)
+#define PIN_BUZZER         13    // D7  -> active buzzer (optional)
+#define PIN_RESET_BTN       0    // D3  -> FLASH button, latch reset (to GND)
+#define PIN_VOLT_ADC       A0    // only used when USE_ADS1115 == 0
+
+#define RELAY_ACTIVE_LOW    1    // most blue relay boards are active LOW
+#define BUZZER_FITTED       1    // 0 if you did not wire a buzzer
+
+/* ---------------- I2C addresses ---------------- */
+#define LCD_I2C_ADDR        0x27 // try 0x3F if the screen stays blank
+#define ADS1115_ADDR        0x48 // ADDR pin -> GND
+
+/* ---------------- Sensor calibration ----------------------------------
+ * VOLT_DIVIDER_RATIO : for the common "Voltage Sensor 0-25V" module the
+ *   on-board divider is 30k/7.5k = 5.0 . Measure with a multimeter and
+ *   tune until the dashboard matches reality.
+ * ACS712_MV_PER_AMP  : 185 for the 5A module, 100 for 20A, 66 for 30A.
+ * ------------------------------------------------------------------- */
+#define VOLT_DIVIDER_RATIO  5.00f
+#define VOLT_TRIM           1.000f   // fine-trim multiplier
+#define ADS_GAIN_FS_VOLTS   4.096f   // GAIN_ONE full scale
+#define ESP_ADC_FS_VOLTS    3.20f    // NodeMCU A0 full scale (has divider)
+
+#define ACS712_MV_PER_AMP   185.0f
+#define ACS712_ZERO_VOLTS   2.500f   // auto-calibrated at boot, this is seed
+#define CURRENT_DEADBAND_A  0.08f    // ignore noise below this
+
+/* ---------------- Protection thresholds (runtime-editable) ---------- */
+#define TH_VOLTAGE_MAX      6.00f    // V   -> required: alert above 6 V
+#define TH_VOLTAGE_MIN      3.50f    // V   -> undervoltage / brownout
+#define TH_CURRENT_MAX      1.20f    // A   -> overload for a small DC motor
+#define TH_TEMP_WARN       45.0f     // degC
+#define TH_TEMP_MAX        55.0f     // degC -> trip
+#define TH_VIB_WARN        18.0f     // events/s
+#define TH_VIB_MAX         35.0f     // events/s -> trip
+
+/* ---------------- Timing ---------------- */
+#define SAMPLE_WINDOW_MS    1000UL   // one feature frame per second
+#define DHT_PERIOD_MS       2200UL   // DHT11 cannot be read faster
+#define LCD_PAGE_MS         2500UL
+#define HISTORY_LEN         120      // 2 minutes of 1 Hz samples kept in RAM
+
+#endif // CONFIG_H

@@ -1,0 +1,22 @@
+# build / tooling
+.vercel/
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# generated model (regenerate with ml/train_model.py)
+ml/model_generated.h
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Arduino build output
+build/
+*.bin
+*.elf

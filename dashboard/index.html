@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motor Health Monitor</title>
+<meta name="description" content="Machine Learning-Based Predictive Maintenance of Electrical Motors Using Vibration Analysis — Synaptix Robotics">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='25' font-size='24'>⚙️</text></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2.2 2.2M16.8 16.8L19 19M19 5l-2.2 2.2M7.2 16.8L5 19"/>
+      </svg>
+    </div>
+    <div>
+      <h1>Motor Health Monitor</h1>
+      <p class="brand-sub">ML Predictive Maintenance · Vibration Analysis</p>
+    </div>
+  </div>
+
+  <div class="conn" role="group" aria-label="Device connection">
+    <label class="sr-only" for="ipInput">ESP8266 device IP address</label>
+    <input id="ipInput" type="text" inputmode="url" spellcheck="false"
+           placeholder="192.168.1.50 or synaptix-pdm.local" autocomplete="off">
+    <button id="connectBtn" class="btn btn-primary">Connect</button>
+    <button id="demoBtn" class="btn" aria-pressed="false">Demo mode</button>
+    <span id="statusPill" class="pill pill-idle">
+      <span class="dot" aria-hidden="true"></span><span id="statusText">Not connected</span>
+    </span>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main>
+  <!-- ===================== VERDICT ===================== -->
+  <section class="verdict" id="verdict" aria-live="polite">
+    <div class="verdict-main">
+      <div class="verdict-head">
+        <span id="sevIcon" class="sev-icon" aria-hidden="true">✓</span>
+        <span class="eyebrow">ML Diagnosis</span>
+        <span id="sevChip" class="chip chip-good">Normal</span>
+      </div>
+      <h2 id="faultName">Awaiting data</h2>
+      <div class="verdict-meta">
+        <span>Confidence <strong id="confVal">—</strong></span>
+        <div class="confbar" role="img" aria-label="Model confidence"><i id="confFill" style="width:0%"></i></div>
+        <span class="muted" id="modelVer">model —</span>
+      </div>
+    </div>
+    <div class="verdict-side">
+      <div class="side-row"><span>Motor supply</span><strong id="relayState">—</strong></div>
+      <div class="side-row"><span>Fault latch</span><strong id="latchState">—</strong></div>
+      <div class="side-row"><span>Est. remaining life</span><strong id="rulState">—</strong></div>
+      <div class="side-row"><span>Trips today</span><strong id="tripCount">—</strong></div>
+      <div class="side-actions">
+        <button id="resetBtn" class="btn btn-warn">Reset latch</button>
+        <button id="stopBtn" class="btn btn-danger">Stop motor</button>
+        <button id="startBtn" class="btn">Start motor</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== ML SUGGESTION ===================== -->
+  <section class="card advice" id="adviceCard">
+    <h3><span aria-hidden="true">🛠</span> Recommended action</h3>
+    <p id="adviceText">Connect to the device or start demo mode to receive maintenance guidance.</p>
+    <ul class="advice-list" id="adviceList"></ul>
+  </section>
+
+  <!-- ===================== KPI TILES ===================== -->
+  <section class="tiles" aria-label="Live sensor readings">
+    <article class="tile" id="tile-voltage">
+      <header><h3>Supply voltage</h3><span class="chip chip-good" data-chip>Normal</span></header>
+      <p class="value"><span data-val>—</span><span class="unit">V</span></p>
+      <p class="limit">limit <span data-limit>6.00</span> V</p>
+      <canvas data-spark width="300" height="46" aria-hidden="true"></canvas>
+    </article>
+    <article class="tile" id="tile-current">
+      <header><h3>Motor current</h3><span class="chip chip-good" data-chip>Normal</span></header>
+      <p class="value"><span data-val>—</span><span class="unit">A</span></p>
+      <p class="limit">limit <span data-limit>1.20</span> A</p>
+      <canvas data-spark width="300" height="46" aria-hidden="true"></canvas>
+    </article>
+    <article class="tile" id="tile-temperature">
+      <header><h3>Winding temp</h3><span class="chip chip-good" data-chip>Normal</span></header>
+      <p class="value"><span data-val>—</span><span class="unit">°C</span></p>
+      <p class="limit">limit <span data-limit>55.0</span> °C</p>
+      <canvas data-spark width="300" height="46" aria-hidden="true"></canvas>
+    </article>
+    <article class="tile" id="tile-vibration">
+      <header><h3>Vibration rate</h3><span class="chip chip-good" data-chip>Normal</span></header>
+      <p class="value"><span data-val>—</span><span class="unit">ev/s</span></p>
+      <p class="limit">limit <span data-limit>35</span> ev/s</p>
+      <canvas data-spark width="300" height="46" aria-hidden="true"></canvas>
+    </article>
+  </section>
+
+  <!-- ===================== MAIN CHART ===================== -->
+  <section class="card chartcard">
+    <div class="chart-head">
+      <div>
+        <h3 id="chartTitle">Vibration rate — last 2 minutes</h3>
+        <p class="muted" id="chartSub">events per second, 1 Hz sampling</p>
+      </div>
+      <div class="seg" role="tablist" aria-label="Metric to plot">
+        <button role="tab" data-metric="vibration" aria-selected="true">Vibration</button>
+        <button role="tab" data-metric="voltage" aria-selected="false">Voltage</button>
+        <button role="tab" data-metric="current" aria-selected="false">Current</button>
+        <button role="tab" data-metric="temperature" aria-selected="false">Temp</button>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="mainChart" width="1200" height="420" role="img"
+              aria-label="Time series of the selected sensor metric"></canvas>
+      <div id="tooltip" class="tooltip" hidden></div>
+    </div>
+    <details class="tableview">
+      <summary>View as table</summary>
+      <div class="tablescroll"><table id="dataTable">
+        <thead><tr><th>#</th><th>Voltage (V)</th><th>Current (A)</th><th>Temp (°C)</th><th>Vibration (ev/s)</th><th>ML class</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </details>
+  </section>
+
+  <!-- ===================== FAULT TIMELINE ===================== -->
+  <section class="card">
+    <h3>Fault classification timeline</h3>
+    <p class="muted">Each band is one second of model output. Oldest on the left.</p>
+    <canvas id="timeline" width="1200" height="54" role="img" aria-label="Fault class over time"></canvas>
+    <ul class="legend" id="timelineLegend"></ul>
+  </section>
+
+  <div class="grid2">
+    <!-- ===================== THRESHOLDS ===================== -->
+    <section class="card">
+      <h3>Protection thresholds</h3>
+      <p class="muted">Written to the ESP8266 over <code>POST /api/config</code>. The relay opens on any breach.</p>
+      <form id="thForm" class="thgrid">
+        <label>Voltage max (V)<input name="voltage_max" type="number" step="0.1" value="6"></label>
+        <label>Voltage min (V)<input name="voltage_min" type="number" step="0.1" value="3.5"></label>
+        <label>Current max (A)<input name="current_max" type="number" step="0.05" value="1.2"></label>
+        <label>Temp warn (°C)<input name="temp_warn" type="number" step="1" value="45"></label>
+        <label>Temp max (°C)<input name="temp_max" type="number" step="1" value="55"></label>
+        <label>Vibration warn<input name="vib_warn" type="number" step="1" value="18"></label>
+        <label>Vibration max<input name="vib_max" type="number" step="1" value="35"></label>
+        <button class="btn btn-primary" type="submit">Apply to device</button>
+      </form>
+    </section>
+
+    <!-- ===================== EVENT LOG ===================== -->
+    <section class="card">
+      <h3>Event log</h3>
+      <div class="loghead">
+        <p class="muted" id="deviceMeta">No device</p>
+        <div class="demo-tools" id="demoTools" hidden>
+          <span class="muted">Inject fault:</span>
+          <button class="btn btn-xs" data-inject="overvoltage">Overvoltage</button>
+          <button class="btn btn-xs" data-inject="overheat">Overheat</button>
+          <button class="btn btn-xs" data-inject="bearing">Bearing</button>
+          <button class="btn btn-xs" data-inject="overload">Overload</button>
+          <button class="btn btn-xs" data-inject="clear">Clear</button>
+        </div>
+      </div>
+      <ol class="log" id="log" aria-live="polite"></ol>
+    </section>
+  </div>
+
+  <footer class="foot">
+    <p>Machine Learning-Based Predictive Maintenance of Electrical Motors Using Vibration Analysis</p>
+    <p class="muted">Decision-tree classifier trained offline · inference on ESP8266 · relay hard-trip independent of the model</p>
+  </footer>
+</main>
+
+<!-- corner watermark -->
+<div class="watermark" aria-hidden="true">
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/>
+  </svg>
+  <span>SYNAPTIX ROBOTICS</span>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
