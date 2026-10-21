@@ -1,4 +1,10 @@
 /* =====================================================================
+ *  config.h.example  ->  copy to config.h before building
+ *
+ *  config.h itself is gitignored because it holds your Wi-Fi password.
+ *  Copy this file to firmware/config.h and fill in SSID and password
+ *  there; your credentials then stay on your machine only.
+ *
  *  config.h  —  Synaptix Robotics
  *  ML-Based Predictive Maintenance of Electrical Motors
  *  Edit everything project-specific here. Nothing else needs changing.
@@ -18,7 +24,7 @@
  * analog channels (voltage sensor + current sensor).
  *
  *   USE_ADS1115 = 1  -> ADS1115 16-bit I2C ADC (RECOMMENDED, shares the
- *                       same I2C bus as the LCD). Voltage on A0 of ADS,
+ *                       ADS1115 on its own I2C bus). Voltage on A0 of ADS,
  *                       current on A1 of ADS. Both channels real.
  *   USE_ADS1115 = 0  -> Fallback: voltage sensor on the ESP's own A0.
  *                       Current is then reported as "unavailable" and the
@@ -27,8 +33,8 @@
 #define USE_ADS1115         1
 
 /* ---------------- GPIO map (NodeMCU / Wemos D1 mini) ---------------- */
-#define PIN_I2C_SDA         4    // D2  -> LCD SDA + ADS1115 SDA
-#define PIN_I2C_SCL         5    // D1  -> LCD SCL + ADS1115 SCL
+#define PIN_I2C_SDA         4    // D2  -> ADS1115 SDA
+#define PIN_I2C_SCL         5    // D1  -> ADS1115 SCL
 #define PIN_DHT             2    // D4  -> DHT11 DATA
 #define PIN_RELAY          14    // D5  -> relay module IN
 #define PIN_VIBRATION      12    // D6  -> SW-420 DO (digital, interrupt)
@@ -38,9 +44,6 @@
 
 #define RELAY_ACTIVE_LOW    1    // most blue relay boards are active LOW
 #define BUZZER_FITTED       1    // 0 if you did not wire a buzzer
-
-/* ---------------- I2C addresses ---------------- */
-#define LCD_I2C_ADDR        0x27 // try 0x3F if the screen stays blank
 #define ADS1115_ADDR        0x48 // ADDR pin -> GND
 
 /* ---------------- Sensor calibration ----------------------------------
@@ -70,7 +73,6 @@
 /* ---------------- Timing ---------------- */
 #define SAMPLE_WINDOW_MS    1000UL   // one feature frame per second
 #define DHT_PERIOD_MS       2200UL   // DHT11 cannot be read faster
-#define LCD_PAGE_MS         2500UL
 #define HISTORY_LEN         120      // 2 minutes of 1 Hz samples kept in RAM
 
 #endif // CONFIG_H

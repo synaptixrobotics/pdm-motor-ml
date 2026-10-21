@@ -33,6 +33,26 @@ pins — a sensor pulling them at power-up stops the board from booting.
 
 ---
 
+## 1b. The LCD is optional - and it can take the whole bus down
+
+`firmware/config.h` ships with **`LCD_FITTED 0`**. With the flag at 0 the
+display is compiled out completely: no library, no object, no I2C traffic for
+it. The web dashboard is then the only readout, which loses nothing - it shows
+strictly more than 16x2 characters ever did.
+
+Set it to `1` only when a known-good display is wired **and powered from 5 V**.
+
+The reason this matters: a PCF8574 backpack with no VCC clamps SDA and SCL to
+ground through its internal protection diodes. That is not a weak pull-down you
+can design around - it stops the ESP8266 from driving the bus at all, so *every*
+I2C address returns error 4 and the ADS1115 disappears with it. The symptoms are
+a blank screen, `BUS FAULT on 126 of 126` from `tools/i2c_scanner`, 0.00 V on
+the dashboard, and an ML verdict of "Undervoltage / Brownout" that is really a
+missing wire three steps upstream.
+
+If the display misbehaves, `LCD_FITTED 0` is a legitimate permanent answer, not
+a workaround.
+
 ## 2. Why an ADS1115 is in the list
 
 The ESP8266 has **exactly one ADC input (A0)**, and this project needs **two**

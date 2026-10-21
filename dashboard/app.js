@@ -430,7 +430,9 @@ function render() {
     const tile = $('#tile-' + key);
     const def  = METRICS[key];
     const val  = s[key === 'vibration' ? 'vibration' : key];
-    const st   = (key === 'current' && s.current_sensor_ok === false) ? 'na' : stateOf(key, val);
+    const missing = (key === 'current'  && s.current_sensor_ok === false) ||
+                    (key === 'voltage'  && s.voltage_sensor_ok === false);
+    const st   = missing ? 'na' : stateOf(key, val);
     tile.dataset.state = st === 'ok' || st === 'na' ? '' : st;
     $('[data-val]', tile).textContent =
       (st === 'na') ? 'n/a' : fmt(val, def.dec);

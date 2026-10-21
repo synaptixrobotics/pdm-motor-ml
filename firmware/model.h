@@ -45,7 +45,7 @@ static const char* const CLASS_NAME[N_CLASSES] = {
   "Rotor Imbalance"
 };
 
-/* 10-char labels for the 16x2 LCD */
+/* Short labels for compact displays and log lines */
 static const char* const CLASS_SHORT[N_CLASSES] = {
   "HEALTHY", "OVERVOLT", "UNDERVOLT", "OVERLOAD", "OVERHEAT", "BEARING", "IMBALANCE"
 };

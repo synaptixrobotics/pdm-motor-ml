@@ -20,3 +20,10 @@ desktop.ini
 build/
 *.bin
 *.elf
+
+# local scratch / exports (not part of the project)
+pdm project/
+pdm project.zip
+
+# real credentials live here - copy from config.h.example
+firmware/config.h

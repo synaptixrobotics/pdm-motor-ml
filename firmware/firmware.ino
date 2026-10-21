@@ -6,11 +6,10 @@
  *  Board    : NodeMCU 1.0 (ESP-12E) / Wemos D1 mini   [ESP8266]
  *  Sensors  : Voltage module 0-25V, ACS712 current, SW-420 vibration,
  *             DHT11 temperature+humidity
- *  Output   : 1-ch relay (motor supply), I2C 16x2 LCD, buzzer
+ *  Output   : 1-ch relay (motor supply), buzzer, web dashboard
  *  ML       : PRE-TRAINED decision tree, inference only (firmware/model.h)
  *
  *  Libraries to install (Arduino IDE -> Library Manager):
- *    - LiquidCrystal I2C            by Frank de Brabander
  *    - DHT sensor library           by Adafruit  (+ Adafruit Unified Sensor)
  *    - Adafruit ADS1X15             by Adafruit   (only if USE_ADS1115 == 1)
  *    - ArduinoJson (v7)             by Benoit Blanchon
@@ -22,7 +21,6 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
 #include <Wire.h>
-#include <LiquidCrystal_I2C.h>
 #include <DHT.h>
 #include <ArduinoJson.h>
 
@@ -35,7 +33,6 @@
   bool adsOk = false;
 #endif
 
-LiquidCrystal_I2C lcd(LCD_I2C_ADDR, 16, 2);
 DHT dht(PIN_DHT, DHT11);
 ESP8266WebServer server(80);
 
@@ -54,6 +51,7 @@ struct Telemetry {
   uint32_t tripCount = 0;
   uint32_t runSeconds = 0;        // seconds the relay has been closed
   bool  currentSensorOk = true;
+  bool  voltageSensorOk = true;
 } T;
 
 /* runtime-editable thresholds, seeded from config.h */
@@ -77,13 +75,41 @@ uint32_t lastSubWindowMs = 0;
 float acsZeroVolts = ACS712_ZERO_VOLTS;
 char  lastTripReason[64] = "none";
 
-uint32_t lastSampleMs = 0, lastDhtMs = 0, lastLcdMs = 0;
-uint8_t  lcdPage = 0;
+uint32_t lastSampleMs = 0, lastDhtMs = 0;
 
 /* ===================================================================
  *  Interrupt: SW-420 digital output
  * =================================================================== */
 void IRAM_ATTR onVibrationPulse() { vibPulses++; }
+
+/* ===================================================================
+ *  Boot-time I2C bus report (prints to Serial, costs ~30 ms)
+ *  The ADS1115 lives on this bus, so when current/voltage readings go
+ *  missing this is the first thing to read.
+ * =================================================================== */
+uint8_t scanI2C() {
+  uint8_t  found = 0;
+  uint16_t busErrors = 0;
+  Serial.println(F("[I2C] scanning bus (SDA=GPIO4/D2, SCL=GPIO5/D1)..."));
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    uint8_t err = Wire.endTransmission();
+    if (err == 4) busErrors++;
+    if (err == 0) {
+      found++;
+      Serial.printf("[I2C]   found 0x%02X%s\n", addr,
+        (addr == 0x27 || addr == 0x3F) ? "  (LCD backpack)" :
+        (addr >= 0x48 && addr <= 0x4B) ? "  (ADS1115)" : "");
+    }
+  }
+  if (busErrors > 100)
+    Serial.println(F("[I2C]   BUS FAULT on every address - a line is stuck "
+                     "low or SDA/SCL are shorted. Run tools/i2c_linetest."));
+  else if (!found)
+    Serial.println(F("[I2C]   NOTHING ON THE BUS - check SDA/SCL wiring, "
+                     "ADS1115 on 3V3, and a common GND."));
+  return found;
+}
 
 /* ===================================================================
  *  Relay helpers
@@ -115,9 +141,6 @@ void tripMotor(const char* reason) {
   strncpy(lastTripReason, reason, sizeof(lastTripReason) - 1);
   lastTripReason[sizeof(lastTripReason) - 1] = 0;
   Serial.printf("[TRIP] %s\n", reason);
-  lcd.clear();
-  lcd.setCursor(0, 0); lcd.print("!! FAULT TRIP !!");
-  lcd.setCursor(0, 1); lcd.print(reason);
   buzz(700);
 }
 
@@ -138,6 +161,9 @@ float readVoltage() {
     float vAdc = (raw * ADS_GAIN_FS_VOLTS) / 32767.0f;
     return vAdc * VOLT_DIVIDER_RATIO * VOLT_TRIM;
   }
+  /* No ADS1115 on the bus. Report "no sensor" rather than a fake 0.00 V,
+     which the model would otherwise classify as a brownout. */
+  T.voltageSensorOk = false;
   return 0.0f;
 #else
   uint32_t acc = 0;
@@ -193,7 +219,7 @@ void pushHistory() {
  *  Hard rule layer  (runs BEFORE the model — safety never depends on ML)
  * =================================================================== */
 void applyProtectionRules() {
-  if (T.voltage > TH.vMax) {
+  if (T.voltageSensorOk && T.voltage > TH.vMax) {
     char msg[40]; snprintf(msg, sizeof(msg), "OVERVOLT %.2fV", T.voltage);
     tripMotor(msg); return;
   }
@@ -238,7 +264,7 @@ void sampleAndClassify() {
   applyProtectionRules();
 
   float f[N_FEATURES] = {
-    T.voltage,
+    T.voltageSensorOk ? T.voltage : 5.0f,      // imputed nominal when no sensor
     T.currentSensorOk ? T.current : 0.35f,     // imputed mean when no sensor
     isnan(T.temperature) ? 30.0f : T.temperature,
     T.vibRate,
@@ -269,35 +295,6 @@ void sampleAndClassify() {
 }
 
 /* ===================================================================
- *  LCD: rotating pages
- * =================================================================== */
-void updateLcd() {
-  if (T.latched) return;   // keep the fault screen frozen
-  lcd.clear();
-  switch (lcdPage) {
-    case 0:
-      lcd.setCursor(0, 0); lcd.printf("V:%.2fV I:%.2fA", T.voltage, T.current);
-      lcd.setCursor(0, 1); lcd.printf("T:%.1fC VB:%3.0f", T.temperature, T.vibRate);
-      break;
-    case 1:
-      lcd.setCursor(0, 0); lcd.print("ML DIAGNOSIS");
-      lcd.setCursor(0, 1); lcd.printf("%-9s %3.0f%%", CLASS_SHORT[T.cls], T.confidence * 100);
-      break;
-    case 2:
-      lcd.setCursor(0, 0); lcd.printf("MOTOR: %s", T.relayOn ? "RUNNING" : "STOPPED");
-      lcd.setCursor(0, 1);
-      if (T.rulHours) lcd.printf("RUL: %u h", T.rulHours);
-      else            lcd.print("SERVICE NOW");
-      break;
-    default:
-      lcd.setCursor(0, 0); lcd.print("SYNAPTIX ROBOT.");
-      lcd.setCursor(0, 1); lcd.print(WiFi.localIP().toString());
-      break;
-  }
-  lcdPage = (lcdPage + 1) % 4;
-}
-
-/* ===================================================================
  *  HTTP API
  * =================================================================== */
 void sendCors() {
@@ -325,6 +322,7 @@ void handleStatus() {
   s["vibration"]   = T.vibRate;
   s["vib_peak"]    = T.vibPeak;
   s["current_sensor_ok"] = T.currentSensorOk;
+  s["voltage_sensor_ok"] = T.voltageSensorOk;
 
   JsonObject m = doc["ml"].to<JsonObject>();
   m["model"]       = MODEL_VERSION;
@@ -437,10 +435,12 @@ void setup() {
   pinMode(PIN_RESET_BTN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_VIBRATION), onVibrationPulse, FALLING);
 
+#if USE_ADS1115
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-  lcd.init(); lcd.backlight();
-  lcd.setCursor(0, 0); lcd.print("SYNAPTIX ROBOT.");
-  lcd.setCursor(0, 1); lcd.print("PDM  booting...");
+  scanI2C();
+#else
+  Serial.println(F("[I2C] no I2C devices configured - bus not started"));
+#endif
 
   dht.begin();
 
@@ -457,18 +457,13 @@ void setup() {
   uint8_t tries = 0;
   while (WiFi.status() != WL_CONNECTED && tries++ < 40) { delay(500); Serial.print('.'); }
 
-  lcd.clear();
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("\nIP: %s\n", WiFi.localIP().toString().c_str());
-    lcd.setCursor(0, 0); lcd.print("WiFi connected");
-    lcd.setCursor(0, 1); lcd.print(WiFi.localIP().toString());
   } else {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_FALLBACK_SSID, AP_FALLBACK_PASS);
     Serial.printf("\nAP mode: %s  IP: %s\n", AP_FALLBACK_SSID,
                   WiFi.softAPIP().toString().c_str());
-    lcd.setCursor(0, 0); lcd.print("AP: Synaptix-PDM");
-    lcd.setCursor(0, 1); lcd.print(WiFi.softAPIP().toString());
   }
 
   if (MDNS.begin(MDNS_HOST)) Serial.printf("mDNS: http://%s.local\n", MDNS_HOST);
@@ -487,7 +482,7 @@ void setup() {
 
   delay(1200);
   relayWrite(true);                        // energise the motor
-  lastSampleMs = lastLcdMs = millis();
+  lastSampleMs = millis();
 }
 
 /* ===================================================================
@@ -510,11 +505,6 @@ void loop() {
     lastSampleMs = millis();
     vibSubWindowCount = 0;
     sampleAndClassify();
-  }
-
-  if (millis() - lastLcdMs >= LCD_PAGE_MS) {
-    lastLcdMs = millis();
-    updateLcd();
   }
 
   /* physical latch-reset button (hold ~1 s) */
