@@ -76,6 +76,7 @@ uint16_t histCount = 0, histHead = 0;
 
 /* vibration pulse counting */
 volatile uint32_t vibPulses = 0;
+volatile uint32_t vibLastUs = 0;
 uint32_t vibSubWindowPeak = 0, vibSubWindowCount = 0;
 uint32_t lastSubWindowMs = 0;
 
@@ -93,7 +94,14 @@ uint16_t i2cBusErrors = 0;
 /* ===================================================================
  *  Interrupt: SW-420 digital output
  * =================================================================== */
-void IRAM_ATTR onVibrationPulse() { vibPulses++; }
+void IRAM_ATTR onVibrationPulse() {
+  /* Reject edges closer together than the debounce window: that is
+     comparator chatter, not a mechanical event. */
+  uint32_t now = micros();
+  if (now - vibLastUs < VIB_DEBOUNCE_US) return;
+  vibLastUs = now;
+  vibPulses++;
+}
 
 /* ===================================================================
  *  Boot-time I2C bus report (prints to Serial, costs ~30 ms)
@@ -143,14 +151,53 @@ void relayWrite(bool on) {
 #endif
 }
 
-void buzz(uint16_t ms) {
+/* ---- Non-blocking buzzer -------------------------------------------
+ * A repeating (on_ms, off_ms) pattern, stepped from loop(). Nothing here
+ * ever calls delay(): a blocking beep in the fault path would stall the
+ * web server for as long as it sounded, exactly when the operator most
+ * needs the dashboard to respond.
+ * ------------------------------------------------------------------ */
+uint16_t buzzOnMs = 0, buzzOffMs = 0;
+uint32_t buzzEdgeMs = 0;
+bool     buzzHigh = false;
+bool     buzzMuted = false;
+
+static inline void buzzerWrite(bool on) {
 #if BUZZER_FITTED
-  digitalWrite(PIN_BUZZER, HIGH);
-  delay(ms);
-  digitalWrite(PIN_BUZZER, LOW);
+  #if BUZZER_PASSIVE
+    /* A bare piezo makes no sound on steady DC - it needs a square wave. */
+    if (on) tone(PIN_BUZZER, BUZZER_TONE_HZ);
+    else    noTone(PIN_BUZZER);
+  #elif BUZZER_ACTIVE_HIGH
+    digitalWrite(PIN_BUZZER, on ? HIGH : LOW);
+  #else
+    digitalWrite(PIN_BUZZER, on ? LOW : HIGH);
+  #endif
 #else
-  (void)ms;
+  (void)on;
 #endif
+}
+
+/* (0, 0) silences it. Re-asserting the same pattern does not restart it. */
+void buzzerPattern(uint16_t onMs, uint16_t offMs) {
+  if (buzzOnMs == onMs && buzzOffMs == offMs) return;
+  buzzOnMs = onMs; buzzOffMs = offMs;
+  buzzEdgeMs = millis();
+  buzzHigh = false;
+  buzzerWrite(false);
+}
+
+void buzzerUpdate() {
+  if (buzzMuted || buzzOnMs == 0) {
+    if (buzzHigh) { buzzHigh = false; buzzerWrite(false); }
+    return;
+  }
+  uint32_t now = millis();
+  if (now - buzzEdgeMs >= (uint32_t)(buzzHigh ? buzzOnMs : buzzOffMs)) {
+    buzzEdgeMs = now;
+    buzzHigh = !buzzHigh;
+    buzzerWrite(buzzHigh);
+  }
 }
 
 void tripMotor(const char* reason) {
@@ -161,13 +208,16 @@ void tripMotor(const char* reason) {
   strncpy(lastTripReason, reason, sizeof(lastTripReason) - 1);
   lastTripReason[sizeof(lastTripReason) - 1] = 0;
   Serial.printf("[TRIP] %s\n", reason);
-  buzz(700);
+  buzzMuted = false;                 // a new trip always un-mutes
+  buzzerPattern(ALARM_ON_MS, ALARM_OFF_MS);
 }
 
 void clearLatch() {
   T.latched = false;
   strncpy(lastTripReason, "none", sizeof(lastTripReason));
   relayWrite(true);
+  buzzMuted = false;
+  buzzerPattern(0, 0);
   Serial.println("[LATCH] cleared, motor re-energised");
 }
 
@@ -276,8 +326,8 @@ void sampleAndClassify() {
   noInterrupts();
   uint32_t pulses = vibPulses; vibPulses = 0;
   interrupts();
-  T.vibRate = pulses * (1000.0f / SAMPLE_WINDOW_MS);
-  T.vibPeak = vibSubWindowPeak * 10.0f;    // 100 ms window -> per second
+  T.vibRate = pulses * (1000.0f / SAMPLE_WINDOW_MS) * VIB_SCALE;
+  T.vibPeak = vibSubWindowPeak * 10.0f * VIB_SCALE;  // 100 ms window -> per second
   vibSubWindowPeak = 0;
 
   T.voltage = readVoltage();
@@ -312,9 +362,12 @@ void sampleAndClassify() {
   if (r.severity >= 3 && !T.latched) {
     char msg[40]; snprintf(msg, sizeof(msg), "ML:%s", r.shortName);
     tripMotor(msg);
-  } else if (r.severity == 2 && !T.latched) {
-    buzz(60);
   }
+
+  /* Drive the buzzer from the current state, every frame. */
+  if (T.latched)            buzzerPattern(ALARM_ON_MS, ALARM_OFF_MS);
+  else if (r.severity >= 2) buzzerPattern(WARN_ON_MS, WARN_OFF_MS);
+  else                      buzzerPattern(0, 0);
 
   if (T.relayOn) T.runSeconds++;
   T.uptimeS = millis() / 1000;
@@ -427,6 +480,27 @@ void handleRelay() {
   server.send(200, "application/json", String("{\"relay_on\":") + (T.relayOn ? "true" : "false") + "}");
 }
 
+void handleBuzzer() {
+  String st = server.arg("state");
+  if (st == "test") {
+    buzzMuted = false;
+    buzzerPattern(ALARM_ON_MS, ALARM_OFF_MS);
+  } else if (st == "mute") {
+    buzzMuted = true;
+  } else if (st == "off") {
+    buzzMuted = false;
+    buzzerPattern(0, 0);
+  } else {
+    sendCors();
+    server.send(400, "application/json",
+                "{\"error\":\"use ?state=test|mute|off\"}");
+    return;
+  }
+  sendCors();
+  server.send(200, "application/json",
+              String("{\"muted\":") + (buzzMuted ? "true" : "false") + "}");
+}
+
 void handleReset() {
   clearLatch();
   sendCors();
@@ -481,13 +555,24 @@ void setup() {
   pinMode(PIN_RELAY, OUTPUT);
   relayWrite(false);                       // fail-safe: motor off at boot
 #if BUZZER_FITTED
-  pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
+  pinMode(PIN_BUZZER, OUTPUT);
+  buzzerWrite(false);
+  #if BUZZER_BOOT_TEST
+    buzzerWrite(true);  delay(150);   // setup() only - the server is not up yet
+    buzzerWrite(false);
+    Serial.println(F("[BUZZER] boot chirp sent. Silence here means wrong "
+                     "polarity or a passive buzzer - see config.h."));
+  #endif
 #endif
   pinMode(PIN_VIBRATION, INPUT);
 #if RESET_BTN_FITTED
   pinMode(PIN_RESET_BTN, INPUT_PULLUP);
 #endif
+#if VIB_EDGE_BOTH
+  attachInterrupt(digitalPinToInterrupt(PIN_VIBRATION), onVibrationPulse, CHANGE);
+#else
   attachInterrupt(digitalPinToInterrupt(PIN_VIBRATION), onVibrationPulse, FALLING);
+#endif
 
 #if I2C_NEEDED
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
@@ -547,6 +632,7 @@ void setup() {
   server.on("/api/status",  HTTP_GET,     handleStatus);
   server.on("/api/relay",   HTTP_GET,     handleRelay);
   server.on("/api/reset",   HTTP_GET,     handleReset);
+  server.on("/api/buzzer",  HTTP_GET,     handleBuzzer);
   server.on("/api/config",  HTTP_GET,     handleConfig);
   server.on("/api/config",  HTTP_POST,    handleConfig);
   server.on("/api/status",  HTTP_OPTIONS, handleOptions);
@@ -566,6 +652,7 @@ void setup() {
 void loop() {
   server.handleClient();
   MDNS.update();
+  buzzerUpdate();
 
   /* 100 ms sub-window -> peak vibration density inside the second */
   if (millis() - lastSubWindowMs >= 100) {
@@ -593,7 +680,7 @@ void loop() {
     if (btnDownMs == 0) {
       btnDownMs = millis();
     } else if (millis() - btnDownMs >= 1000) {
-      if (T.latched) { clearLatch(); buzz(120); }
+      if (T.latched) clearLatch();   // clearLatch() silences the alarm
       btnDownMs = 0;
     }
     /* Held low for 10 s is not a press - it is a wiring fault. Say so once. */

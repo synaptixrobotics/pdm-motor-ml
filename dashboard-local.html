@@ -617,21 +617,18 @@ function showBanner(html) {
   b.hidden = false;
 }
 
-/* Vercel serves the dashboard over HTTPS; the ESP8266 only speaks HTTP.
-   Browsers block that mix, so say so plainly instead of failing silently. */
-function mixedContentCheck(host) {
-  if (location.protocol === 'https:' && host.startsWith('http://')) {
+/* An HTTPS page cannot call the ESP8266's HTTP API. We only say so once
+   requests have actually failed: a browser set to allow insecure content
+   works fine, and a warning over a working connection is just noise. */
+function mixedContentWarn() {
+  if (location.protocol === 'https:') {
     showBanner(
-      '<strong>Mixed content blocked.</strong> This page is served over HTTPS, ' +
-      'but the ESP8266 only serves HTTP, so the browser will refuse the request. ' +
-      'Use the local copy of the dashboard (open <code>dashboard/index.html</code> ' +
-      'or run <code>npx serve dashboard</code>), or allow insecure content for this ' +
-      'site in the browser site settings. <strong>Demo mode works everywhere.</strong>'
+      '<strong>Requests are being blocked.</strong> This page is served over ' +
+      'HTTPS, but the ESP8266 only serves HTTP. Open <code>dashboard-local.html</code> ' +
+      'directly from disk, or allow insecure content for this site in the browser ' +
+      'settings. <strong>Demo mode works everywhere.</strong>'
     );
-    return true;
   }
-  showBanner(null);
-  return false;
 }
 
 async function fetchJson(url, opts = {}, ms = 2500) {
@@ -649,7 +646,6 @@ function connect() {
   if (!host) { log('Enter the ESP8266 IP address first.', 'warn'); return; }
   S.ip = host;
   localStorage.setItem(LS_KEY, $('#ipInput').value.trim());
-  mixedContentCheck(host);
   stopPolling();
   S.fails = 0;
   setMode('live', 'Connecting…');
@@ -673,6 +669,7 @@ async function pollLive() {
   try {
     const d = await fetchJson(S.ip + '/api/status');
     S.fails = 0;
+    showBanner(null);
     if (S.mode !== 'live') setMode('live', 'Live');
     ingestDevice(d);
   } catch (e) {
@@ -680,6 +677,7 @@ async function pollLive() {
     if (S.fails >= 3) {
       setMode('error', 'Device unreachable');
       $('#statusText').textContent = 'Device unreachable';
+      mixedContentWarn();
     }
   }
 }
@@ -1215,10 +1213,6 @@ window.addEventListener('resize', () => {
   setMode('idle', 'Not connected');
   fillThresholdForm();
   log('Dashboard ready. Enter the ESP8266 IP and press Connect, or try Demo mode.');
-  if (location.protocol === 'https:')
-    showBanner('<strong>Served over HTTPS.</strong> Browsers block requests from an ' +
-      'HTTPS page to the ESP8266\'s HTTP server. For live hardware, open the dashboard ' +
-      'locally over <code>http://</code>; <strong>Demo mode works here.</strong>');
   if (saved) connect();
 })();
 

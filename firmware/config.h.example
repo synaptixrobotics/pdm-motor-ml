@@ -53,6 +53,23 @@
 
 #define RELAY_ACTIVE_LOW    1    // most blue relay boards are active LOW
 #define BUZZER_FITTED       1    // 0 if you did not wire a buzzer
+#define BUZZER_ACTIVE_HIGH  1    // 0 for modules that sound on a LOW pin
+
+/* ACTIVE buzzer  = has its own oscillator, sounds on a steady DC level.
+ * PASSIVE buzzer = a bare piezo, SILENT on steady DC - it needs a square
+ * wave. If the buzzer never makes a sound but the pin is wired correctly,
+ * this is almost always why. Set to 1 and it is driven with tone(). */
+#define BUZZER_PASSIVE      0
+#define BUZZER_TONE_HZ   2700    // piezo discs are loudest near 2-4 kHz
+#define BUZZER_BOOT_TEST    1    // short chirp at startup to prove wiring
+
+/* Alarm patterns, in ms (on, off). The buzzer repeats these for as long
+ * as the condition holds - a single beep at the moment of the trip is
+ * easy to miss, and a latched fault should keep announcing itself. */
+#define ALARM_ON_MS       200    // tripped + latched: urgent, continuous
+#define ALARM_OFF_MS      300
+#define WARN_ON_MS         80    // maintenance due: occasional chirp
+#define WARN_OFF_MS      4000
 #define RESET_BTN_FITTED    0    /* physical latch-reset button on D3?
                                  *   D3 is GPIO0, a boot-strapping pin. If
                                  *   anything holds it LOW the firmware sees a
@@ -91,6 +108,27 @@
 #define TH_TEMP_MAX        55.0f     // degC -> trip
 #define TH_VIB_WARN        18.0f     // events/s
 #define TH_VIB_MAX         35.0f     // events/s -> trip
+
+/* ---------------- Vibration sensitivity ----------------------------
+ * The SW-420's coarse sensitivity is the blue potentiometer on the board
+ * itself - no firmware setting can beat a badly adjusted trimmer. These
+ * two make the firmware side as sensitive as it can be.
+ *
+ * VIB_EDGE_BOTH: count rising AND falling edges instead of falling only.
+ *   Doubles the count for the same physical shaking. Thresholds above
+ *   assume this is 1.
+ * VIB_SCALE: final multiplier on events/second, for tuning the displayed
+ *   figure against your own motor without touching the thresholds. */
+#define VIB_EDGE_BOTH       1
+
+/* Minimum gap between counted edges, microseconds. The LM393 on the
+ * SW-420 has no hysteresis: with the trimmer near its switching point
+ * the output oscillates and produces tens of thousands of edges per
+ * second, which is chatter, not vibration. 2000 us caps the count at
+ * 500 events/s - far above any real mechanical rate - and throws the
+ * rest away. Raise it if chatter still gets through. */
+#define VIB_DEBOUNCE_US  2000
+#define VIB_SCALE          1.0f
 
 /* ---------------- Timing ---------------- */
 #define SAMPLE_WINDOW_MS    1000UL   // one feature frame per second
