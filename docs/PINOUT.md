@@ -26,12 +26,44 @@ are GPIO numbers; the silkscreen label (D1, D2 …) is given alongside.
 | Relay module | IN | **D5** | 14 | active LOW on most boards |
 | Relay module | VCC | **VIN (5 V)** | — | |
 | Buzzer (optional) | + | **D7** | 13 | active buzzer |
-| Latch reset button | — | **D3 (FLASH)** | 0 | already on-board, to GND |
+| Latch reset button | — | **D3 (FLASH)** | 0 | **optional**, `RESET_BTN_FITTED 0` by default; anything holding D3 low looks like a permanent press |
 
 **Do not use D0 (GPIO16), D3 (GPIO0) or D8 (GPIO15) for sensors.** They are boot-strapping
 pins — a sensor pulling them at power-up stops the board from booting.
 
 ---
+
+## 1a. INA219 - the recommended power front-end
+
+One I2C module measures **bus voltage and current together**, replacing both
+the 0-25 V divider and the ACS712, and using no analog pin at all. It is the
+default in `config.h` (`USE_INA219 1`, address `0x40`).
+
+| INA219 pin | Goes to |
+|---|---|
+| VCC | NodeMCU **3V3** |
+| GND | GND (common) |
+| SDA | **D2** (GPIO4) |
+| SCL | **D1** (GPIO5) |
+| A0, A1 | GND -> address `0x40` |
+| **VIN+** | supply **+**, from the relay NO contact |
+| **VIN-** | motor **+** terminal |
+
+VIN+ and VIN- are the screw terminals: the motor current flows **through** the
+module between them, across its 0.1 ohm shunt. Bus voltage is measured at VIN-,
+so the reading is the rail the motor actually sees, after the relay.
+
+Leave A0/A1 tied to GND unless you need a second module on the same bus
+(`0x41`, `0x44`, `0x45`).
+
+Range is set by `INA219_RANGE` in `config.h`. The default 32 V / 2 A is the
+safe choice: a stalled motor draws several times its running current, and a
+narrower range simply clips.
+
+Why this is better than the two-sensor arrangement it replaces: one device
+instead of two, no analog channel contention, no ACS712 zero-point drift, no
+5 V signal feeding a 3.3 V ADC input, and current and voltage sampled from the
+same point in the circuit.
 
 ## 1b. The LCD is optional - and it can take the whole bus down
 

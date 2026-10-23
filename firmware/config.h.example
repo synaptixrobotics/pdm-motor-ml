@@ -19,18 +19,27 @@
 #define AP_FALLBACK_SSID    "Synaptix-PDM"      // if Wi-Fi fails -> AP mode
 #define AP_FALLBACK_PASS    "synaptix123"
 
-/* ---------------- Analog front-end -----------------------------------
- * The ESP8266 has only ONE ADC pin (A0), but this project needs TWO
- * analog channels (voltage sensor + current sensor).
+/* ---------------- Power sensing front-end --------------------------
+ * Pick ONE. USE_INA219 wins if both are set to 1.
  *
- *   USE_ADS1115 = 1  -> ADS1115 16-bit I2C ADC (RECOMMENDED, shares the
- *                       ADS1115 on its own I2C bus). Voltage on A0 of ADS,
- *                       current on A1 of ADS. Both channels real.
- *   USE_ADS1115 = 0  -> Fallback: voltage sensor on the ESP's own A0.
- *                       Current is then reported as "unavailable" and the
- *                       model runs with a current-imputed value.
- * -------------------------------------------------------------------- */
-#define USE_ADS1115         1
+ *   USE_INA219 = 1  -> RECOMMENDED. One I2C module measures bus voltage
+ *                      AND current together, replacing both the 0-25V
+ *                      divider and the ACS712. No analog pin used at all.
+ *   USE_ADS1115 = 1 -> External 4-ch ADC. Voltage on ADS A0, ACS712 on
+ *                      ADS A1 (needs CURRENT_SENSOR_FITTED 1).
+ *   both = 0        -> Voltage only, on the ESP's own A0. No current.
+ * ------------------------------------------------------------------ */
+#define USE_INA219          1
+#define INA219_ADDR         0x40   // A0/A1 pins to GND. 0x41/0x44/0x45 otherwise
+
+/* Full-scale range. Smaller range = finer resolution, but readings clip
+ * above it - a stalled motor draws far more than it does running.
+ *   0 = 32V / 2A  (library default, safest for stall currents)
+ *   1 = 32V / 1A  (finer, clips above 1A)
+ *   2 = 16V / 400mA (finest, for very small motors) */
+#define INA219_RANGE        0
+
+#define USE_ADS1115         0
 
 /* ---------------- GPIO map (NodeMCU / Wemos D1 mini) ---------------- */
 #define PIN_I2C_SDA         4    // D2  -> ADS1115 SDA
@@ -44,6 +53,19 @@
 
 #define RELAY_ACTIVE_LOW    1    // most blue relay boards are active LOW
 #define BUZZER_FITTED       1    // 0 if you did not wire a buzzer
+#define RESET_BTN_FITTED    0    /* physical latch-reset button on D3?
+                                 *   D3 is GPIO0, a boot-strapping pin. If
+                                 *   anything holds it LOW the firmware sees a
+                                 *   permanent button press. Leave 0 and use
+                                 *   the dashboard's Reset latch button; set 1
+                                 *   only with a real button to GND on D3. */
+#define CURRENT_SENSOR_FITTED 0  /* ACS712 wired? IGNORED when USE_INA219
+                                 * is 1 - the INA219 supplies current itself.
+                                 * This flag only applies to the ADS1115 path.
+                                 *   0 = no current sensing: the tile reads
+                                 *       "No sensor", the overload class never
+                                 *       fires, ADS A1 is never read.
+                                 *   1 = ACS712 OUT on ADS A1. */
 #define ADS1115_ADDR        0x48 // ADDR pin -> GND
 
 /* ---------------- Sensor calibration ----------------------------------

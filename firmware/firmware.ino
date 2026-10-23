@@ -27,11 +27,18 @@
 #include "config.h"
 #include "model.h"
 
-#if USE_ADS1115
+#if USE_INA219
+  #include <Adafruit_INA219.h>
+  Adafruit_INA219 ina(INA219_ADDR);
+  bool inaOk = false;
+#elif USE_ADS1115
   #include <Adafruit_ADS1X15.h>
   Adafruit_ADS1115 ads;
   bool adsOk = false;
 #endif
+
+/* The I2C bus only needs starting if something lives on it. */
+#define I2C_NEEDED  (USE_INA219 || USE_ADS1115)
 
 DHT dht(PIN_DHT, DHT11);
 ESP8266WebServer server(80);
@@ -77,6 +84,12 @@ char  lastTripReason[64] = "none";
 
 uint32_t lastSampleMs = 0, lastDhtMs = 0;
 
+/* Boot-time I2C census, published on /api/status so the bus can be
+   diagnosed over the network instead of through the Serial Monitor. */
+uint8_t  i2cFound[8]  = {0};
+uint8_t  i2cCount     = 0;
+uint16_t i2cBusErrors = 0;
+
 /* ===================================================================
  *  Interrupt: SW-420 digital output
  * =================================================================== */
@@ -90,6 +103,8 @@ void IRAM_ATTR onVibrationPulse() { vibPulses++; }
 uint8_t scanI2C() {
   uint8_t  found = 0;
   uint16_t busErrors = 0;
+  uint32_t t0 = millis();
+  i2cCount = 0;
   Serial.println(F("[I2C] scanning bus (SDA=GPIO4/D2, SCL=GPIO5/D1)..."));
   for (uint8_t addr = 1; addr < 127; addr++) {
     Wire.beginTransmission(addr);
@@ -97,11 +112,16 @@ uint8_t scanI2C() {
     if (err == 4) busErrors++;
     if (err == 0) {
       found++;
+      if (i2cCount < 8) i2cFound[i2cCount++] = addr;
       Serial.printf("[I2C]   found 0x%02X%s\n", addr,
         (addr == 0x27 || addr == 0x3F) ? "  (LCD backpack)" :
-        (addr >= 0x48 && addr <= 0x4B) ? "  (ADS1115)" : "");
+        (addr >= 0x48 && addr <= 0x4B) ? "  (ADS1115)" :
+        (addr == 0x40 || addr == 0x41 ||
+         addr == 0x44 || addr == 0x45) ? "  (INA219)"  : "");
     }
   }
+  i2cBusErrors = busErrors;
+  Serial.printf("[I2C]   scan finished in %lu ms\n", (unsigned long)(millis() - t0));
   if (busErrors > 100)
     Serial.println(F("[I2C]   BUS FAULT on every address - a line is stuck "
                      "low or SDA/SCL are shorted. Run tools/i2c_linetest."));
@@ -155,7 +175,11 @@ void clearLatch() {
  *  Sensor reads
  * =================================================================== */
 float readVoltage() {
-#if USE_ADS1115
+#if USE_INA219
+  if (!inaOk) { T.voltageSensorOk = false; return 0.0f; }
+  /* Bus voltage = the rail the motor actually sees, measured at VIN-. */
+  return ina.getBusVoltage_V() * VOLT_TRIM;
+#elif USE_ADS1115
   if (adsOk) {
     int16_t raw = ads.readADC_SingleEnded(0);
     float vAdc = (raw * ADS_GAIN_FS_VOLTS) / 32767.0f;
@@ -174,7 +198,14 @@ float readVoltage() {
 }
 
 float readCurrent() {
-#if USE_ADS1115
+#if USE_INA219
+  if (!inaOk) { T.currentSensorOk = false; return 0.0f; }
+  float a = fabsf(ina.getCurrent_mA()) / 1000.0f;
+  return a < CURRENT_DEADBAND_A ? 0.0f : a;
+#elif !CURRENT_SENSOR_FITTED
+  T.currentSensorOk = false;    // no ACS712 in this build
+  return 0.0f;
+#elif USE_ADS1115
   if (!adsOk) { T.currentSensorOk = false; return 0.0f; }
   /* RMS-ish: average the absolute deviation from the zero point */
   float acc = 0;
@@ -194,7 +225,7 @@ float readCurrent() {
 }
 
 void calibrateCurrentZero() {
-#if USE_ADS1115
+#if USE_ADS1115 && CURRENT_SENSOR_FITTED
   if (!adsOk) return;
   float acc = 0;
   for (uint8_t k = 0; k < 64; k++) {
@@ -334,6 +365,27 @@ void handleStatus() {
   m["suggestion"]  = CLASS_ACTION[T.cls];
   m["rul_hours"]   = T.rulHours;
 
+  JsonObject d = doc["diagnostics"].to<JsonObject>();
+#if USE_INA219
+  d["sensor"] = "INA219";
+  d["sensor_ok"] = inaOk;
+#elif USE_ADS1115
+  d["sensor"] = "ADS1115";
+  d["sensor_ok"] = adsOk;
+#else
+  d["sensor"] = "ESP A0";
+  d["sensor_ok"] = true;
+#endif
+  d["i2c_bus_errors"] = i2cBusErrors;
+  d["i2c_bus_fault"]  = (i2cBusErrors > 100);
+  JsonArray devs = d["i2c_devices"].to<JsonArray>();
+  for (uint8_t k = 0; k < i2cCount; k++) {
+    char hex[6];
+    snprintf(hex, sizeof(hex), "0x%02X", i2cFound[k]);
+    devs.add(hex);
+  }
+  d["free_heap"] = ESP.getFreeHeap();
+
   JsonObject p = doc["protection"].to<JsonObject>();
   p["relay_on"]    = T.relayOn;
   p["latched"]     = T.latched;
@@ -432,11 +484,19 @@ void setup() {
   pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
 #endif
   pinMode(PIN_VIBRATION, INPUT);
+#if RESET_BTN_FITTED
   pinMode(PIN_RESET_BTN, INPUT_PULLUP);
+#endif
   attachInterrupt(digitalPinToInterrupt(PIN_VIBRATION), onVibrationPulse, FALLING);
 
-#if USE_ADS1115
+#if I2C_NEEDED
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+  /* Cap how long the master waits for a slave to release SCL. The core
+     default is long enough that a floating line stalls ~0.8 s PER address,
+     turning a 30 ms bus scan into a 100 s boot delay. 1 ms is far more than
+     any device here needs. */
+  Wire.setClock(100000);
+  Wire.setClockStretchLimit(1000);
   scanI2C();
 #else
   Serial.println(F("[I2C] no I2C devices configured - bus not started"));
@@ -444,7 +504,22 @@ void setup() {
 
   dht.begin();
 
-#if USE_ADS1115
+#if USE_INA219
+  inaOk = ina.begin();
+  if (inaOk) {
+  #if   INA219_RANGE == 1
+    ina.setCalibration_32V_1A();
+  #elif INA219_RANGE == 2
+    ina.setCalibration_16V_400mA();
+  #else
+    ina.setCalibration_32V_2A();
+  #endif
+    Serial.printf("[INA219] ready at 0x%02X\n", INA219_ADDR);
+  } else {
+    Serial.println(F("[WARN] INA219 not found - check wiring/address. "
+                     "Voltage and current will read as 'no sensor'."));
+  }
+#elif USE_ADS1115
   adsOk = ads.begin(ADS1115_ADDR);
   if (adsOk) { ads.setGain(GAIN_ONE); ads.setDataRate(RATE_ADS1115_250SPS); }
   else Serial.println(F("[WARN] ADS1115 not found - check wiring/address"));
@@ -507,9 +582,29 @@ void loop() {
     sampleAndClassify();
   }
 
-  /* physical latch-reset button (hold ~1 s) */
+#if RESET_BTN_FITTED
+  /* Physical latch-reset button (hold ~1 s), timed without blocking.
+     A blocking delay() here is fatal: if the pin ever sits LOW the loop
+     stalls a full second per pass and server.handleClient() is starved,
+     so the whole HTTP API stops answering while the board looks alive. */
+  static uint32_t btnDownMs = 0;
+  static bool     btnWarned = false;
   if (digitalRead(PIN_RESET_BTN) == LOW) {
-    delay(1000);
-    if (digitalRead(PIN_RESET_BTN) == LOW && T.latched) { clearLatch(); buzz(120); }
+    if (btnDownMs == 0) {
+      btnDownMs = millis();
+    } else if (millis() - btnDownMs >= 1000) {
+      if (T.latched) { clearLatch(); buzz(120); }
+      btnDownMs = 0;
+    }
+    /* Held low for 10 s is not a press - it is a wiring fault. Say so once. */
+    if (!btnWarned && btnDownMs && millis() - btnDownMs >= 10000) {
+      btnWarned = true;
+      Serial.println(F("[WARN] reset button pin (D3/GPIO0) is stuck LOW. "
+                       "Unplug whatever is on D3; it is not a button press."));
+    }
+  } else {
+    btnDownMs = 0;
+    btnWarned = false;
   }
+#endif
 }

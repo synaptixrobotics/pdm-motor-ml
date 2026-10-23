@@ -233,7 +233,20 @@ function ingestDevice(d) {
     latched: !!p.latched,
     trips: p.trip_count ?? 0,
     runS: d.run_seconds ?? 0,
-    meta: `${d.device || 'device'} · ${d.ip || S.ip} · RSSI ${d.rssi ?? '—'} dBm · up ${Math.floor((d.uptime_s||0)/60)} min`
+    meta: (() => {
+      const g = d.diagnostics || {};
+      const bits = [
+        d.device || 'device',
+        d.ip || S.ip,
+        `RSSI ${d.rssi ?? '—'} dBm`,
+        `up ${Math.floor((d.uptime_s || 0) / 60)} min`
+      ];
+      if (g.i2c_bus_fault) bits.push('I²C BUS FAULT');
+      else if (Array.isArray(g.i2c_devices))
+        bits.push(`I²C: ${g.i2c_devices.length ? g.i2c_devices.join(', ') : 'none'}`);
+      if (g.sensor_ok === false) bits.push(`${g.sensor || 'power sensor'} not detected`);
+      return bits.join(' · ');
+    })()
   };
 
   if (prev && prev.cls !== S.last.cls)

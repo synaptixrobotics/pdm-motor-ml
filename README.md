@@ -72,8 +72,8 @@ pdm-motor-ml/
 | 1 | NodeMCU ESP8266 (ESP-12E) | 1 | or Wemos D1 mini |
 | 2 | DC motor, 6 V | 1 | the unit under test |
 | 3 | 1-channel relay module 5 V | 1 | active-LOW type |
-| 4 | Voltage sensor module 0–25 V | 1 | 30k/7.5k divider |
-| 5 | ACS712 current sensor | 1 | 5 A version |
+| 4 | **INA219 current+voltage sensor** | 1 | I²C, replaces items 4 and 5 below |
+| 5 | Voltage sensor 0–25 V *(alt)* | 0–1 | only for the ADS1115 / A0 paths |
 | 6 | SW-420 vibration sensor | 1 | digital output |
 | 7 | DHT11 temperature + humidity | 1 | |
 | 8 | I²C 16×2 LCD (PCF8574 backpack) | 0–1 | **optional** — `LCD_FITTED 0` by default |
@@ -104,15 +104,15 @@ Flip the switch in `firmware/config.h`. Both paths are written and supported.
 
 | Signal | NodeMCU | GPIO |
 |---|---|---|
-| I²C SDA (ADS1115, LCD if fitted) | **D2** | 4 |
-| I²C SCL (ADS1115, LCD if fitted) | **D1** | 5 |
+| I²C SDA (ADS1115) | **D2** | 4 |
+| I²C SCL (ADS1115) | **D1** | 5 |
 | DHT11 DATA | **D4** | 2 |
 | Relay IN | **D5** | 14 |
 | SW-420 DO | **D6** | 12 |
 | Buzzer | **D7** | 13 |
-| Latch reset | **D3** (FLASH) | 0 |
-| Voltage sensor OUT | ADS **A0** | — |
-| ACS712 OUT | ADS **A1** | — |
+| Latch reset (optional, off by default) | **D3** (FLASH) | 0 |
+| INA219 SDA / SCL | **D2** / **D1** | 4 / 5 |
+| INA219 VIN+ / VIN− | in series with motor | — |
 
 Full table, power wiring, flyback diode, sensor mounting and calibration:
 **[docs/PINOUT.md](docs/PINOUT.md)**.
@@ -125,12 +125,12 @@ Full table, power wiring, flyback diode, sensor mounting and calibration:
    `https://arduino.esp8266.com/stable/package_esp8266com_index.json`
    then Boards Manager → install **esp8266**.
 2. Library Manager → install:
-   - *LiquidCrystal I2C* (Frank de Brabander) — only if `LCD_FITTED 1`
    - *DHT sensor library* + *Adafruit Unified Sensor*
-   - *Adafruit ADS1X15*
+   - *Adafruit INA219* (+ *Adafruit BusIO*)
+   - *Adafruit ADS1X15* — only if you use the ADS1115 path instead
    - *ArduinoJson* (v7)
 3. Copy `firmware/config.h.example` to `firmware/config.h`, then set
-   `WIFI_SSID`, `WIFI_PASSWORD` and `USE_ADS1115` in it. `config.h` is
+   `WIFI_SSID`, `WIFI_PASSWORD` and your sensor front-end in it. `config.h` is
    gitignored so your Wi-Fi password never reaches the repository.
 4. Board: **NodeMCU 1.0 (ESP-12E Module)**, Upload speed 115200.
 5. Upload, then open Serial Monitor at **115200**. It prints the IP address —
