@@ -19,7 +19,7 @@ A light-theme web dashboard shows everything live.
 
 | Condition | Threshold | What happens |
 |---|---|---|
-| Supply voltage above rating | **> 6.0 V** | Relay opens, LCD + buzzer alert, dashboard turns red, ML returns the overvoltage remedy |
+| Supply voltage above rating | **> 6.0 V** | Relay opens, buzzer alert, dashboard turns red, ML returns the overvoltage remedy |
 | Winding temperature | **> 55 °C** | Relay opens, cool-down guidance |
 | Vibration | **> 35 events/s** | Relay opens, imbalance guidance |
 | Vibration elevated | **18 – 35 events/s** | No trip. Classified as bearing wear, maintenance scheduled, RUL drops to ~20 h |
@@ -46,7 +46,7 @@ auto-restarting motor with a real fault is how equipment gets destroyed.
 ```
 pdm-motor-ml/
 ├── firmware/
-│   ├── firmware.ino      ESP8266 sketch — sensors, relay, LCD, web API
+│   ├── firmware.ino      ESP8266 sketch — sensors, relay, web API
 │   ├── config.h          Wi-Fi, pins, calibration, thresholds  ← edit this
 │   └── model.h           PRE-TRAINED tree + suggestions (frozen export)
 ├── ml/
@@ -73,28 +73,30 @@ pdm-motor-ml/
 | 2 | DC motor, 6 V | 1 | the unit under test |
 | 3 | 1-channel relay module 5 V | 1 | active-LOW type |
 | 4 | Voltage sensor module 0–25 V | 1 | 30k/7.5k divider |
-| 5 | ACS712 current sensor | 1 | 5 A version |
+| 5 | **INA219 current sensor (I²C)** | 1 | replaces the ACS712 — see the note below |
 | 6 | SW-420 vibration sensor | 1 | digital output |
 | 7 | DHT11 temperature + humidity | 1 | |
-| 8 | I²C 16×2 LCD (PCF8574 backpack) | 0–1 | **optional** — `LCD_FITTED 0` by default |
-| 9 | **ADS1115 16-bit I²C ADC** | 1 | **see the note below** |
-| 10 | Buzzer (active, 5 V) | 1 | optional |
-| 11 | 1N4007 diode + 100 nF cap | 1 | flyback across the motor — not optional in practice |
-| 12 | Buck converter / 5 V supply | 1 | |
+| 8 | Buzzer (active, 5 V) | 1 | optional |
+| 9 | 1N4007 diode + 100 nF cap | 1 | flyback across the motor — not optional in practice |
+| 10 | Buck converter / 5 V supply | 1 | |
 
-### The one part you didn't list, and why you need it
+### Why the current sensor is an INA219 and not an ACS712
 
-The ESP8266 has **one** ADC pin. Your project needs **two** analog channels
-(voltage sensor **and** current sensor). That is a hardware limit of the chip,
-not a software problem.
+The ESP8266 has **one** ADC pin, and an ACS712 is an *analog* sensor. With the
+voltage module on that pin there is no second channel left, which is why the
+earlier design needed an ADS1115 to arbitrate between the two.
 
-- **With an ADS1115** (`USE_ADS1115 1`, the default): both channels read properly
-  at 16-bit resolution, and it shares the I²C bus the LCD already uses — two extra
-  wires, nothing else changes.
-- **Without one** (`USE_ADS1115 0`): voltage goes on the ESP's A0, current is not
-  measured. The dashboard shows "No sensor" on the current tile and the model
-  substitutes an imputed value. Everything else — overvoltage, overheat, vibration,
-  relay cut-off, dashboard — works exactly the same.
+The INA219 removes the problem instead of working around it: it carries its own
+shunt and 12-bit ADC, and reports amps over I²C as a number. So the voltage
+module keeps the ESP's own **A0**, current comes in over two I²C wires, and the
+ADS1115 is not needed at all — one module fewer than before, not one more.
+
+- **With an INA219** (`CURRENT_SENSOR_FITTED 1`, the default): real current and
+  power, the Mechanical Overload class, and the 1.2 A relay trip.
+- **Without one** (`CURRENT_SENSOR_FITTED 0`): no I²C bus is started at all. The
+  dashboard shows "No sensor" on the current tile, the overload class never fires
+  and the model substitutes an imputed value. Everything else — overvoltage,
+  overheat, vibration, relay cut-off, dashboard, RUL — works exactly the same.
 
 Flip the switch in `firmware/config.h`. Both paths are written and supported.
 
@@ -104,15 +106,15 @@ Flip the switch in `firmware/config.h`. Both paths are written and supported.
 
 | Signal | NodeMCU | GPIO |
 |---|---|---|
-| I²C SDA (ADS1115, LCD if fitted) | **D2** | 4 |
-| I²C SCL (ADS1115, LCD if fitted) | **D1** | 5 |
+| I²C SDA (INA219) | **D2** | 4 |
+| I²C SCL (INA219) | **D1** | 5 |
 | DHT11 DATA | **D4** | 2 |
 | Relay IN | **D5** | 14 |
 | SW-420 DO | **D6** | 12 |
 | Buzzer | **D7** | 13 |
 | Latch reset | **D3** (FLASH) | 0 |
-| Voltage sensor OUT | ADS **A0** | — |
-| ACS712 OUT | ADS **A1** | — |
+| Voltage sensor S (out) | **A0** | — |
+| INA219 VIN+ / VIN− | in series with motor + | — |
 
 Full table, power wiring, flyback diode, sensor mounting and calibration:
 **[docs/PINOUT.md](docs/PINOUT.md)**.
@@ -125,16 +127,15 @@ Full table, power wiring, flyback diode, sensor mounting and calibration:
    `https://arduino.esp8266.com/stable/package_esp8266com_index.json`
    then Boards Manager → install **esp8266**.
 2. Library Manager → install:
-   - *LiquidCrystal I2C* (Frank de Brabander) — only if `LCD_FITTED 1`
    - *DHT sensor library* + *Adafruit Unified Sensor*
-   - *Adafruit ADS1X15*
+   - *Adafruit INA219* — only if `CURRENT_SENSOR_FITTED 1`
    - *ArduinoJson* (v7)
 3. Copy `firmware/config.h.example` to `firmware/config.h`, then set
-   `WIFI_SSID`, `WIFI_PASSWORD` and `USE_ADS1115` in it. `config.h` is
+   `WIFI_SSID`, `WIFI_PASSWORD` and `CURRENT_SENSOR_FITTED` in it. `config.h` is
    gitignored so your Wi-Fi password never reaches the repository.
 4. Board: **NodeMCU 1.0 (ESP-12E Module)**, Upload speed 115200.
-5. Upload, then open Serial Monitor at **115200**. It prints the IP address —
-   the LCD shows it too.
+5. Upload, then open Serial Monitor at **115200**. It prints the IP address,
+   the I²C scan result and the INA219 range profile.
 
 If Wi-Fi fails, the board starts its own access point `Synaptix-PDM` /
 `synaptix123` at `192.168.4.1`, so the demo still works with no router.

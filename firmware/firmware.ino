@@ -4,14 +4,14 @@
  *  Using Vibration Analysis
  *
  *  Board    : NodeMCU 1.0 (ESP-12E) / Wemos D1 mini   [ESP8266]
- *  Sensors  : Voltage module 0-25V, ACS712 current, SW-420 vibration,
- *             DHT11 temperature+humidity
+ *  Sensors  : Voltage module 0-25V (ESP A0), INA219 current (I2C),
+ *             SW-420 vibration, DHT11 temperature+humidity
  *  Output   : 1-ch relay (motor supply), buzzer, web dashboard
  *  ML       : PRE-TRAINED decision tree, inference only (firmware/model.h)
  *
  *  Libraries to install (Arduino IDE -> Library Manager):
  *    - DHT sensor library           by Adafruit  (+ Adafruit Unified Sensor)
- *    - Adafruit ADS1X15             by Adafruit   (only if USE_ADS1115 == 1)
+ *    - Adafruit INA219              by Adafruit  (only if CURRENT_SENSOR_FITTED)
  *    - ArduinoJson (v7)             by Benoit Blanchon
  *  Board manager URL:
  *    https://arduino.esp8266.com/stable/package_esp8266com_index.json
@@ -27,10 +27,10 @@
 #include "config.h"
 #include "model.h"
 
-#if USE_ADS1115
-  #include <Adafruit_ADS1X15.h>
-  Adafruit_ADS1115 ads;
-  bool adsOk = false;
+#if CURRENT_SENSOR_FITTED
+  #include <Adafruit_INA219.h>
+  Adafruit_INA219 ina219(INA219_ADDR);
+  bool inaOk = false;
 #endif
 
 DHT dht(PIN_DHT, DHT11);
@@ -72,7 +72,6 @@ volatile uint32_t vibPulses = 0;
 uint32_t vibSubWindowPeak = 0, vibSubWindowCount = 0;
 uint32_t lastSubWindowMs = 0;
 
-float acsZeroVolts = ACS712_ZERO_VOLTS;
 char  lastTripReason[64] = "none";
 
 uint32_t lastSampleMs = 0, lastDhtMs = 0;
@@ -84,7 +83,7 @@ void IRAM_ATTR onVibrationPulse() { vibPulses++; }
 
 /* ===================================================================
  *  Boot-time I2C bus report (prints to Serial, costs ~30 ms)
- *  The ADS1115 lives on this bus, so when current/voltage readings go
+ *  The INA219 lives on this bus, so when the current reading goes
  *  missing this is the first thing to read.
  * =================================================================== */
 uint8_t scanI2C() {
@@ -98,8 +97,9 @@ uint8_t scanI2C() {
     if (err == 0) {
       found++;
       Serial.printf("[I2C]   found 0x%02X%s\n", addr,
-        (addr == 0x27 || addr == 0x3F) ? "  (LCD backpack)" :
-        (addr >= 0x48 && addr <= 0x4B) ? "  (ADS1115)" : "");
+        (addr >= 0x40 && addr <= 0x4F) ? "  (INA219)" :
+        (addr == 0x27 || addr == 0x3F) ? "  (PCF8574 - not used by this "
+                                         "project, unpower it)" : "");
     }
   }
   if (busErrors > 100)
@@ -107,7 +107,7 @@ uint8_t scanI2C() {
                      "low or SDA/SCL are shorted. Run tools/i2c_linetest."));
   else if (!found)
     Serial.println(F("[I2C]   NOTHING ON THE BUS - check SDA/SCL wiring, "
-                     "ADS1115 on 3V3, and a common GND."));
+                     "INA219 on 3V3, and a common GND."));
   return found;
 }
 
@@ -155,54 +155,34 @@ void clearLatch() {
  *  Sensor reads
  * =================================================================== */
 float readVoltage() {
-#if USE_ADS1115
-  if (adsOk) {
-    int16_t raw = ads.readADC_SingleEnded(0);
-    float vAdc = (raw * ADS_GAIN_FS_VOLTS) / 32767.0f;
-    return vAdc * VOLT_DIVIDER_RATIO * VOLT_TRIM;
-  }
-  /* No ADS1115 on the bus. Report "no sensor" rather than a fake 0.00 V,
-     which the model would otherwise classify as a brownout. */
-  T.voltageSensorOk = false;
-  return 0.0f;
-#else
+#if VOLTAGE_SENSOR_FITTED
   uint32_t acc = 0;
   for (uint8_t k = 0; k < 16; k++) { acc += analogRead(PIN_VOLT_ADC); delayMicroseconds(200); }
   float vAdc = (acc / 16.0f) * ESP_ADC_FS_VOLTS / 1023.0f;
   return vAdc * VOLT_DIVIDER_RATIO * VOLT_TRIM;
-#endif
-}
-
-float readCurrent() {
-#if USE_ADS1115
-  if (!adsOk) { T.currentSensorOk = false; return 0.0f; }
-  /* RMS-ish: average the absolute deviation from the zero point */
-  float acc = 0;
-  const uint8_t N = 32;
-  for (uint8_t k = 0; k < N; k++) {
-    int16_t raw = ads.readADC_SingleEnded(1);
-    float vAdc = (raw * ADS_GAIN_FS_VOLTS) / 32767.0f;
-    acc += fabsf(vAdc - acsZeroVolts);
-    delayMicroseconds(300);
-  }
-  float amps = (acc / N) * 1000.0f / ACS712_MV_PER_AMP;
-  return amps < CURRENT_DEADBAND_A ? 0.0f : amps;
 #else
-  T.currentSensorOk = false;   // no second ADC channel available
+  /* Report "no sensor" rather than a fake 0.00 V, which the model would
+     otherwise classify as a brownout. */
+  T.voltageSensorOk = false;
   return 0.0f;
 #endif
 }
 
-void calibrateCurrentZero() {
-#if USE_ADS1115
-  if (!adsOk) return;
+float readCurrent() {
+#if CURRENT_SENSOR_FITTED
+  if (!inaOk) { T.currentSensorOk = false; return 0.0f; }
+  /* The INA219 integrates each conversion internally, so there is no zero
+     point to subtract and no RMS to reconstruct by hand. Average a few
+     conversions to settle brush noise; take the magnitude so a module
+     wired with VIN+/VIN- swapped still reads the right amount. */
   float acc = 0;
-  for (uint8_t k = 0; k < 64; k++) {
-    acc += (ads.readADC_SingleEnded(1) * ADS_GAIN_FS_VOLTS) / 32767.0f;
-    delay(2);
-  }
-  acsZeroVolts = acc / 64.0f;
-  Serial.printf("[CAL] ACS712 zero = %.3f V\n", acsZeroVolts);
+  const uint8_t N = 8;
+  for (uint8_t k = 0; k < N; k++) { acc += ina219.getCurrent_mA(); delay(1); }
+  float amps = fabsf(acc / N) / 1000.0f;
+  return amps < CURRENT_DEADBAND_A ? 0.0f : amps;
+#else
+  T.currentSensorOk = false;   // no current sensor fitted
+  return 0.0f;
 #endif
 }
 
@@ -435,7 +415,7 @@ void setup() {
   pinMode(PIN_RESET_BTN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_VIBRATION), onVibrationPulse, FALLING);
 
-#if USE_ADS1115
+#if CURRENT_SENSOR_FITTED
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   scanI2C();
 #else
@@ -444,11 +424,23 @@ void setup() {
 
   dht.begin();
 
-#if USE_ADS1115
-  adsOk = ads.begin(ADS1115_ADDR);
-  if (adsOk) { ads.setGain(GAIN_ONE); ads.setDataRate(RATE_ADS1115_250SPS); }
-  else Serial.println(F("[WARN] ADS1115 not found - check wiring/address"));
-  calibrateCurrentZero();
+#if CURRENT_SENSOR_FITTED
+  inaOk = ina219.begin();
+  if (inaOk) {
+  #if   INA219_CAL == 0
+    ina219.setCalibration_16V_400mA();
+  #elif INA219_CAL == 1
+    ina219.setCalibration_32V_1A();
+  #else
+    ina219.setCalibration_32V_2A();
+  #endif
+    Serial.printf("[INA219] ready at 0x%02X, range profile %d\n",
+                  INA219_ADDR, INA219_CAL);
+  } else {
+    Serial.println(F("[WARN] INA219 not found - check wiring/address. "
+                     "Current reads as 'no sensor'; voltage, temperature "
+                     "and vibration protection are unaffected."));
+  }
 #endif
 
   WiFi.mode(WIFI_STA);

@@ -19,47 +19,60 @@
 #define AP_FALLBACK_SSID    "Synaptix-PDM"      // if Wi-Fi fails -> AP mode
 #define AP_FALLBACK_PASS    "synaptix123"
 
-/* ---------------- Analog front-end -----------------------------------
- * The ESP8266 has only ONE ADC pin (A0), but this project needs TWO
- * analog channels (voltage sensor + current sensor).
+/* ---------------- Sensor front-end -----------------------------------
+ * The ESP8266 has only ONE ADC pin (A0), which used to be the problem:
+ * two analog sensors (voltage + ACS712 current) needed two channels, so
+ * an ADS1115 had to arbitrate. The INA219 removes that constraint — it
+ * carries its own shunt and 12-bit ADC and reports amps over I2C as a
+ * number, leaving A0 free for the voltage module.
  *
- *   USE_ADS1115 = 1  -> ADS1115 16-bit I2C ADC (RECOMMENDED, shares the
- *                       ADS1115 on its own I2C bus). Voltage on A0 of ADS,
- *                       current on A1 of ADS. Both channels real.
- *   USE_ADS1115 = 0  -> Fallback: voltage sensor on the ESP's own A0.
- *                       Current is then reported as "unavailable" and the
- *                       model runs with a current-imputed value.
+ *   CURRENT_SENSOR_FITTED = 1 -> INA219 in series with the motor's
+ *                                positive lead, after the relay.
+ *                                Mechanical Overload class and the
+ *                                current trip are both live.
+ *   CURRENT_SENSOR_FITTED = 0 -> no current sensor, and no I2C bus
+ *                                started at all. The dashboard shows
+ *                                "No sensor" on the current tile, the
+ *                                overload class never fires, and the
+ *                                model runs on an imputed value.
+ *                                Voltage, temperature and vibration
+ *                                protection are unaffected.
+ *
+ * VOLTAGE_SENSOR_FITTED = 0 reports "no sensor" rather than a fake
+ * 0.00 V, which the model would otherwise classify as a brownout.
  * -------------------------------------------------------------------- */
-#define USE_ADS1115         1
+#define CURRENT_SENSOR_FITTED  1
+#define VOLTAGE_SENSOR_FITTED  1
 
 /* ---------------- GPIO map (NodeMCU / Wemos D1 mini) ---------------- */
-#define PIN_I2C_SDA         4    // D2  -> ADS1115 SDA
-#define PIN_I2C_SCL         5    // D1  -> ADS1115 SCL
+#define PIN_I2C_SDA         4    // D2  -> INA219 SDA
+#define PIN_I2C_SCL         5    // D1  -> INA219 SCL
 #define PIN_DHT             2    // D4  -> DHT11 DATA
 #define PIN_RELAY          14    // D5  -> relay module IN
 #define PIN_VIBRATION      12    // D6  -> SW-420 DO (digital, interrupt)
 #define PIN_BUZZER         13    // D7  -> active buzzer (optional)
 #define PIN_RESET_BTN       0    // D3  -> FLASH button, latch reset (to GND)
-#define PIN_VOLT_ADC       A0    // only used when USE_ADS1115 == 0
+#define PIN_VOLT_ADC       A0    // A0  -> voltage sensor S (module output)
 
 #define RELAY_ACTIVE_LOW    1    // most blue relay boards are active LOW
 #define BUZZER_FITTED       1    // 0 if you did not wire a buzzer
-#define ADS1115_ADDR        0x48 // ADDR pin -> GND
+#define INA219_ADDR         0x40 // A0 and A1 address pads -> GND
 
 /* ---------------- Sensor calibration ----------------------------------
  * VOLT_DIVIDER_RATIO : for the common "Voltage Sensor 0-25V" module the
  *   on-board divider is 30k/7.5k = 5.0 . Measure with a multimeter and
  *   tune until the dashboard matches reality.
- * ACS712_MV_PER_AMP  : 185 for the 5A module, 100 for 20A, 66 for 30A.
+ * INA219_CAL : measuring range. 2 (32 V / 2 A, 100 uA per bit) leaves
+ *   headroom above the 1.2 A trip and is the right choice for a 6 V DC
+ *   motor. Use 1 for a finer 1 A range only if the motor's stall current
+ *   is comfortably under 1 A — above the range the reading saturates.
  * ------------------------------------------------------------------- */
 #define VOLT_DIVIDER_RATIO  5.00f
 #define VOLT_TRIM           1.000f   // fine-trim multiplier
-#define ADS_GAIN_FS_VOLTS   4.096f   // GAIN_ONE full scale
 #define ESP_ADC_FS_VOLTS    3.20f    // NodeMCU A0 full scale (has divider)
 
-#define ACS712_MV_PER_AMP   185.0f
-#define ACS712_ZERO_VOLTS   2.500f   // auto-calibrated at boot, this is seed
-#define CURRENT_DEADBAND_A  0.08f    // ignore noise below this
+#define INA219_CAL          2        // 0 = 16V/400mA, 1 = 32V/1A, 2 = 32V/2A
+#define CURRENT_DEADBAND_A  0.02f    // ignore noise below this
 
 /* ---------------- Protection thresholds (runtime-editable) ---------- */
 #define TH_VOLTAGE_MAX      6.00f    // V   -> required: alert above 6 V

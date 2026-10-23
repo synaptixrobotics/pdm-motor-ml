@@ -65,21 +65,23 @@ void runTest() {
     Serial.println(F("  In order of likelihood:"));
     Serial.println(F("   - both jumpers landed on the breadboard GND rail,"));
     Serial.println(F("     or in a row that already carries a GND wire"));
-    Serial.println(F("   - an UNPOWERED module clamping the bus: the LCD"));
-    Serial.println(F("     VCC must be on VIN (5V) and actually seated"));
-    Serial.println(F("   - solder bridge to GND on the LCD backpack"));
+    Serial.println(F("   - an UNPOWERED module clamping the bus: every"));
+    Serial.println(F("     module on SDA/SCL needs its VCC actually seated"));
+    Serial.println(F("     (INA219 -> 3V3). An unpowered LCD backpack is"));
+    Serial.println(F("     the classic offender - unplug it entirely."));
+    Serial.println(F("   - solder bridge to GND on a module's header"));
     Serial.println();
     Serial.println(F("  NEXT: unplug BOTH jumpers from D1 and D2, leave the"));
     Serial.println(F("  ESP powered, and re-run this sketch."));
     Serial.println(F("    both HIGH -> fault is off-board (breadboard or"));
-    Serial.println(F("                 LCD). Re-add one wire at a time."));
+    Serial.println(F("                 a module). Re-add one wire at a time."));
     Serial.println(F("    still LOW -> fault is on the NodeMCU itself;"));
     Serial.println(F("                 move I2C to other pins in config.h."));
   }
   else if (shorted) {
     Serial.println(F("  SDA and SCL are electrically the SAME NODE."));
     Serial.println(F("   - both jumpers pushed into the SAME breadboard row"));
-    Serial.println(F("   - solder bridge across two pins on the LCD backpack"));
+    Serial.println(F("   - solder bridge across two pins on a module header"));
     Serial.println(F("   - D1 and D2 bridged on the NodeMCU header"));
     Serial.println(F("  Separate them, then re-run."));
   }
@@ -94,7 +96,7 @@ void runTest() {
   else {
     Serial.println(F("  Both lines are healthy and independent."));
     Serial.println(F(""));
-    Serial.println(F("  If the LCD/ADS1115 are CONNECTED right now, the"));
+    Serial.println(F("  If the INA219 is CONNECTED right now, the"));
     Serial.println(F("  wiring is good and a bus fault points at weak"));
     Serial.println(F("  pull-ups: add 4.7k from SDA->3V3 and SCL->3V3."));
     Serial.println(F(""));
